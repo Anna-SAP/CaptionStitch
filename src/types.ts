@@ -63,6 +63,8 @@ export interface Settings {
   credit: string;
   notePos: 'top' | 'bottom';
   font: FontStyle;
+  /** Text colour as #rrggbb; empty picks black or white to suit the background. */
+  textColor: string;
   /** 0 means "source width". */
   width: number;
   format: OutFormat;
@@ -88,6 +90,7 @@ export const DEFAULT_SETTINGS: Settings = {
   credit: '',
   notePos: 'bottom',
   font: 'sans',
+  textColor: '',
   width: 1080,
   format: 'jpeg',
   quality: 90,
@@ -95,3 +98,34 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 export const FULL_RECT: Rect = { x: 0, y: 0, w: 1, h: 1 };
+
+/** A decoration placed on top of the finished image: an emoji or one of the user's own pictures. */
+export interface Sticker {
+  id: string;
+  kind: 'emoji' | 'image';
+  /** The emoji character(s), for kind 'emoji'. */
+  emoji?: string;
+  /** The picture in the sticker library, for kind 'image'. */
+  assetId?: string;
+  /** Width divided by height. */
+  aspect: number;
+  /** Which part of the image the sticker belongs to. */
+  anchor: 'header' | 'body' | 'footer';
+  /** Centre: fraction of the image width. */
+  x: number;
+  /** Centre: fraction of the frame area's height (body), or of the image width below the top of a text area. */
+  y: number;
+  /** Width as a fraction of the image width. */
+  size: number;
+  /** Rotation in degrees. */
+  rot: number;
+}
+
+/** A picture the user added to their sticker library. */
+export interface StickerAsset {
+  id: string;
+  name: string;
+  blob: Blob;
+  bitmap: ImageBitmap;
+  thumb: string;
+}

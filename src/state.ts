@@ -1,11 +1,21 @@
 import { computed, effect, signal } from '@preact/signals';
 import { combineBands, detectCrop } from './core/detect';
-import { analyseBand, importBlob } from './core/image';
+import { analyseBand, importBlob, importStickerBlob, newId } from './core/image';
 import { normalizeBand } from './core/layout';
-import { planRender } from './core/render';
+import { planRender, type Decor } from './core/render';
+import { anchorAt } from './core/stickers';
 import { idbDel, idbGet, idbKeys, idbSet } from './core/store';
 import { t, type Key } from './i18n';
-import { DEFAULT_SETTINGS, FULL_RECT, type Band, type Frame, type Rect, type Settings } from './types';
+import {
+  DEFAULT_SETTINGS,
+  FULL_RECT,
+  type Band,
+  type Frame,
+  type Rect,
+  type Settings,
+  type Sticker,
+  type StickerAsset,
+} from './types';
 
 /* ------------------------------------------------------------------ */
 /* Signals                                                             */
@@ -31,6 +41,15 @@ export const showGuides = signal(true);
 /** The frame the pointer is on (or that was last tapped). */
 export const activeId = signal<string | null>(null);
 
+/** Stickers placed on the image, in paint order. */
+export const stickers = signal<Sticker[]>([]);
+/** The user's own sticker pictures; kept between visits. */
+export const assets = signal<StickerAsset[]>([]);
+export const activeSticker = signal<string | null>(null);
+/** Which text field (or the sticker layer) the emoji picker feeds; null when it is closed. */
+export type PickerTarget = 'title' | 'note' | 'credit' | 'sticker';
+export const picker = signal<PickerTarget | null>(null);
+
 export type Modal =
   | null
   | { kind: 'crop'; id: string }
@@ -38,6 +57,10 @@ export type Modal =
 export const modal = signal<Modal>(null);
 
 export const plan = computed(() => (frames.value.length ? planRender(frames.value, settings.value) : null));
+export const decor = computed<Decor>(() => ({
+  stickers: stickers.value,
+  assets: new Map(assets.value.map((a) => [a.id, a])),
+}));
 
 /* ------------------------------------------------------------------ */
 /* Toasts                                                              */
@@ -221,14 +244,105 @@ export function removeFrame(id: string) {
 
 export function clearAll() {
   const before = frames.value;
+  const beforeStickers = stickers.value;
   if (before.length === 0) return;
   frames.value = [];
-  toast(t('cleared'), { action: { label: t('undo'), run: () => restore(before) } });
+  stickers.value = [];
+  activeSticker.value = null;
+  toast(t('cleared'), {
+    action: {
+      label: t('undo'),
+      run: () => {
+        stickers.value = beforeStickers;
+        restore(before);
+      },
+    },
+  });
 }
 
 function restore(list: Frame[]) {
   frames.value = list;
   reanalyse();
+}
+
+/* ------------------------------------------------------------------ */
+/* Stickers                                                            */
+/* ------------------------------------------------------------------ */
+
+/** A point in the finished image, in output pixels. */
+export interface Point {
+  cx: number;
+  cy: number;
+}
+
+/** Place a sticker. Without a position it lands in a text area if there is one, else over the frames' upper right. */
+export function addSticker(base: Pick<Sticker, 'kind' | 'emoji' | 'assetId' | 'aspect'>, at?: Point | null): void {
+  const p = plan.value;
+  if (!p) return;
+  const l = p.layout;
+  const footer = l.height - l.body.y - l.body.h;
+  // Nudge each new sticker so several added in a row do not hide one another.
+  const nudge = ((stickers.value.length % 5) - 2) * 0.035 * l.width;
+  const point = at ?? {
+    cx: l.width * 0.78,
+    cy: footer > 0 ? l.body.y + l.body.h + footer / 2 : l.body.y > 0 ? l.body.y / 2 : l.body.y + l.body.h * 0.2,
+  };
+  const size = base.kind === 'emoji' ? 0.11 : Math.min(0.18, 0.18 * base.aspect);
+  const sticker: Sticker = {
+    id: newId(),
+    ...base,
+    ...anchorAt(point.cx + nudge, point.cy + nudge * 0.6, l),
+    size,
+    rot: 0,
+  };
+  stickers.value = [...stickers.value, sticker];
+  activeSticker.value = sticker.id;
+}
+
+export function updateSticker(id: string, patch: Partial<Sticker>) {
+  stickers.value = stickers.value.map((s) => (s.id === id ? { ...s, ...patch } : s));
+}
+
+export function removeSticker(id: string) {
+  stickers.value = stickers.value.filter((s) => s.id !== id);
+  if (activeSticker.value === id) activeSticker.value = null;
+}
+
+/** Add pictures to the sticker library and place each one on the image. */
+export async function addStickerFiles(files: Iterable<File>, at?: Point | null): Promise<void> {
+  let failed = 0;
+  busy.value++;
+  try {
+    for (const file of files) {
+      try {
+        const asset = await importStickerBlob(file, file.name);
+        assets.value = [...assets.value, asset];
+        addSticker({ kind: 'image', assetId: asset.id, aspect: asset.bitmap.width / asset.bitmap.height }, at);
+      } catch {
+        failed++;
+      }
+    }
+  } finally {
+    busy.value--;
+  }
+  if (failed) fail('importFailed', { n: failed });
+}
+
+/** Take a picture out of the library, together with the stickers that use it. */
+export function removeAsset(id: string) {
+  const beforeAssets = assets.value;
+  const beforeStickers = stickers.value;
+  assets.value = beforeAssets.filter((a) => a.id !== id);
+  stickers.value = beforeStickers.filter((s) => s.assetId !== id);
+  toast(t('stickerRemoved'), {
+    action: {
+      label: t('undo'),
+      run: () => {
+        assets.value = beforeAssets;
+        stickers.value = beforeStickers;
+      },
+    },
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -244,20 +358,29 @@ interface SavedFrame {
   band: Band | null;
 }
 
+interface SavedSession {
+  frames: SavedFrame[];
+  stickers: Sticker[];
+}
+
 let restoring = true;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 const storedBlobs = new Set<string>();
 
-async function saveSession(list: Frame[]) {
+async function saveSession(list: Frame[], placed: Sticker[], library: StickerAsset[]) {
   try {
-    for (const f of list) {
-      if (storedBlobs.has(f.id)) continue;
-      await idbSet('blobs', f.id, f.blob);
-      storedBlobs.add(f.id);
+    for (const item of [...list, ...library]) {
+      if (storedBlobs.has(item.id)) continue;
+      await idbSet('blobs', item.id, item.blob);
+      storedBlobs.add(item.id);
     }
-    const meta: SavedFrame[] = list.map(({ id, name, crop, cropAuto, full, band }) => ({ id, name, crop, cropAuto, full, band }));
-    await idbSet('kv', 'session', meta);
-    const keep = new Set(list.map((f) => f.id));
+    const session: SavedSession = {
+      frames: list.map(({ id, name, crop, cropAuto, full, band }) => ({ id, name, crop, cropAuto, full, band })),
+      stickers: placed,
+    };
+    await idbSet('kv', 'session', session);
+    await idbSet('kv', 'stickerLib', library.map(({ id, name }) => ({ id, name })));
+    const keep = new Set([...list, ...library].map((x) => x.id));
     for (const id of [...storedBlobs]) {
       if (keep.has(id)) continue;
       await idbDel('blobs', id);
@@ -268,16 +391,32 @@ async function saveSession(list: Frame[]) {
   }
 }
 
-/** Bring back the frames from the previous visit, if any. */
+/** Bring back the sticker library and the frames from the previous visit, if any. */
 export async function restoreSession(): Promise<void> {
   try {
-    const meta = await idbGet<SavedFrame[]>('kv', 'session');
     for (const key of await idbKeys('blobs')) storedBlobs.add(String(key));
-    if (meta?.length) {
+
+    const lib = (await idbGet<{ id: string; name: string }[]>('kv', 'stickerLib')) ?? [];
+    const library: StickerAsset[] = [];
+    for (const item of lib) {
+      const blob = await idbGet<Blob>('blobs', item.id);
+      if (!blob) continue;
+      try {
+        library.push(await importStickerBlob(blob, item.name, item.id));
+      } catch {
+        /* skip unreadable entries */
+      }
+    }
+    if (library.length) assets.value = [...library, ...assets.value];
+
+    // Sessions saved by earlier versions were a plain list of frames.
+    const saved = await idbGet<SavedSession | SavedFrame[]>('kv', 'session');
+    const session: SavedSession = Array.isArray(saved) ? { frames: saved, stickers: [] } : (saved ?? { frames: [], stickers: [] });
+    if (session.frames.length) {
       const list: Frame[] = [];
       busy.value++;
       try {
-        for (const m of meta) {
+        for (const m of session.frames) {
           const blob = await idbGet<Blob>('blobs', m.id);
           if (!blob) continue;
           try {
@@ -292,6 +431,8 @@ export async function restoreSession(): Promise<void> {
       }
       if (list.length && frames.value.length === 0) {
         frames.value = list;
+        const known = new Set(assets.value.map((a) => a.id));
+        stickers.value = (session.stickers ?? []).filter((s) => s.kind === 'emoji' || (s.assetId && known.has(s.assetId)));
         say('restored');
       }
     }
@@ -313,7 +454,9 @@ effect(() => {
 
 effect(() => {
   const list = frames.value;
+  const placed = stickers.value;
+  const library = assets.value;
   if (restoring) return;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => void saveSession(list), 600);
+  saveTimer = setTimeout(() => void saveSession(list, placed, library), 600);
 });

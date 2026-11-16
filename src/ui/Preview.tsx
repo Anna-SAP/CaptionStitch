@@ -2,8 +2,22 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { encodeCanvas, formatBytes, renderTo, type Encoded } from '../core/export';
 import { MIN_BAND, clamp, type Placed } from '../core/layout';
 import { t } from '../i18n';
-import { activeId, frames, plan, setBand, setFrameBand, settings, showGuides } from '../state';
-import type { Frame } from '../types';
+import { anchorAt, stickerBox } from '../core/stickers';
+import {
+  activeId,
+  activeSticker,
+  decor,
+  frames,
+  plan,
+  removeSticker,
+  setBand,
+  setFrameBand,
+  settings,
+  showGuides,
+  stickers,
+  updateSticker,
+} from '../state';
+import type { Frame, Sticker } from '../types';
 import { useDrag } from './controls';
 import { FrameTools } from './FrameTools';
 import { Icon } from './icons';
@@ -55,7 +69,10 @@ function ItemOverlay({ item, frame, width, height, count, primary }: { item: Pla
       data-item={frame.id}
       style={{ left: pct(item.dx / width), top: pct(item.dy / height), width: pct(item.dw / width), height: pct(item.dh / height) }}
       onPointerEnter={(e) => e.pointerType === 'mouse' && (activeId.value = frame.id)}
-      onClick={() => (activeId.value = frame.id)}
+      onClick={() => {
+        activeId.value = frame.id;
+        activeSticker.value = null;
+      }}
     >
       <span class="item-index">{item.index + 1}</span>
       <FrameTools frame={frame} index={item.index} count={count} full={item.full} />
@@ -78,17 +95,90 @@ function ItemOverlay({ item, frame, width, height, count, primary }: { item: Pla
   );
 }
 
+/** A sticker's hit box in the preview: drag to move, drag the handle to resize and rotate. */
+function StickerOverlay({ sticker }: { sticker: Sticker }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const layout = plan.value!.layout;
+  const box = stickerBox(sticker, layout);
+  const active = activeSticker.value === sticker.id;
+  // Output pixels per screen pixel.
+  const scale = () => layout.width / ref.current!.parentElement!.getBoundingClientRect().width;
+
+  const move = useDrag(() => {
+    activeSticker.value = sticker.id;
+    const k = scale();
+    const start = box;
+    return (dx, dy) => {
+      const now = plan.value?.layout;
+      if (now) updateSticker(sticker.id, anchorAt(start.cx + dx * k, start.cy + dy * k, now));
+    };
+  });
+
+  const resize = useDrag((e) => {
+    const sheet = ref.current!.parentElement!.getBoundingClientRect();
+    const k = scale();
+    const cx = sheet.left + box.cx / k;
+    const cy = sheet.top + box.cy / k;
+    const v0 = { x: e.clientX - cx, y: e.clientY - cy };
+    const d0 = Math.hypot(v0.x, v0.y) || 1;
+    const a0 = Math.atan2(v0.y, v0.x);
+    const start = sticker;
+    return (_dx, _dy, ev) => {
+      const v = { x: ev.clientX - cx, y: ev.clientY - cy };
+      let rot = start.rot + ((Math.atan2(v.y, v.x) - a0) * 180) / Math.PI;
+      rot = ((rot + 540) % 360) - 180;
+      // Settle on level when close to it.
+      if (Math.abs(rot) < 4) rot = 0;
+      updateSticker(sticker.id, { size: clamp((start.size * Math.hypot(v.x, v.y)) / d0, 0.03, 1.5), rot });
+    };
+  });
+
+  return (
+    <div
+      ref={ref}
+      class={`sticker${active ? ' active' : ''}`}
+      data-sticker={sticker.id}
+      style={{
+        left: pct((box.cx - box.w / 2) / layout.width),
+        top: pct((box.cy - box.h / 2) / layout.height),
+        width: pct(box.w / layout.width),
+        height: pct(box.h / layout.height),
+        transform: `rotate(${sticker.rot}deg)`,
+      }}
+      onClick={(e) => e.stopPropagation()}
+      {...move}
+    >
+      {active && (
+        <>
+          <button
+            type="button"
+            class="sticker-x"
+            title={t('removeSticker')}
+            aria-label={t('removeSticker')}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => removeSticker(sticker.id)}
+          >
+            <Icon name="close" size={12} />
+          </button>
+          <span class="sticker-handle" title={t('resizeSticker')} {...resize} />
+        </>
+      )}
+    </div>
+  );
+}
+
 export function Preview() {
   const p = plan.value;
   const list = frames.value;
+  const deco = decor.value;
   const s = settings.value;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState<'fit' | 'actual'>('fit');
   const [estimate, setEstimate] = useState<Encoded | null>(null);
 
   useLayoutEffect(() => {
-    if (p && canvasRef.current) renderTo(canvasRef.current, p, list);
-  }, [p, list]);
+    if (p && canvasRef.current) renderTo(canvasRef.current, p, list, deco);
+  }, [p, list, deco]);
 
   // File size estimate: encode with the export settings once things settle.
   useEffect(() => {
@@ -109,7 +199,7 @@ export function Preview() {
       stale = true;
       clearTimeout(timer);
     };
-  }, [p, list]);
+  }, [p, list, deco]);
 
   if (!p) return null;
   const { width, height } = p.layout;
@@ -151,7 +241,7 @@ export function Preview() {
           </div>
         </div>
       </div>
-      <div class="preview-scroll">
+      <div class="preview-scroll" onClick={() => (activeSticker.value = null)}>
         <div class="sheet" style={zoom === 'fit' ? { width: `min(100%, ${Math.min(width, 900)}px)` } : { width: `${width}px` }}>
           <canvas ref={canvasRef} />
           <div class="overlay">
@@ -161,6 +251,9 @@ export function Preview() {
                 <ItemOverlay key={item.id} item={item} frame={f} width={width} height={height} count={list.length} primary={item.id === firstFull} />
               ) : null;
             })}
+            {stickers.value.map((s) => (
+              <StickerOverlay key={s.id} sticker={s} />
+            ))}
           </div>
         </div>
       </div>

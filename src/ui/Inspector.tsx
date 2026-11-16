@@ -1,15 +1,58 @@
-import { useState } from 'preact/hooks';
+import { useMemo, useRef, useState } from 'preact/hooks';
+import { dominantColors } from '../core/color';
 import { shareText } from '../core/export';
+import { cropKey, sampleFrame } from '../core/image';
 import { clamp } from '../core/layout';
+import { textColors } from '../core/text';
 import { t } from '../i18n';
-import { autoBand, frames, modal, patchSettings, say, setAutoTrim, setBand, settings } from '../state';
+import {
+  addSticker,
+  addStickerFiles,
+  assets,
+  autoBand,
+  frames,
+  modal,
+  patchSettings,
+  picker,
+  removeAsset,
+  say,
+  setAutoTrim,
+  setBand,
+  settings,
+} from '../state';
 import type { LayoutMode, OutFormat } from '../types';
+import { ColorField } from './ColorField';
+import { EmojiPicker } from './EmojiPicker';
 import { Section, Segmented, Slider, Toggle } from './controls';
 import { Icon } from './icons';
+import { fieldEls, revealActiveSticker, stickerSpot, type TextField } from './place';
 
 const WIDTHS = [750, 1080, 1280, 1440, 1920];
 const SIZES = [0, 500 * 1024, 1024 * 1024, 2 * 1024 * 1024, 5 * 1024 * 1024, 10 * 1024 * 1024];
-const BACKGROUNDS = ['#111111', '#000000', '#ffffff', '#f4efe6', '#1f2a37', '#3b2f2f'];
+const BACKGROUNDS = [
+  '#111111', '#000000', '#2b2b2b', '#1f2a37', '#1e3a34', '#2d2440', '#3b2f2f',
+  '#ffffff', '#f4efe6', '#ffd9e1', '#ffe8c2', '#fff3b0', '#d8f3dc', '#cdeafe', '#e2d9ff',
+  '#ff6b81', '#ffb347', '#f2c14e', '#5ec4a8', '#4ea8de', '#9b7ede',
+];
+const TEXT_COLORS = ['#f5f3ee', '#191919', '#f2c14e', '#ff6b81', '#4ea8de', '#5ec4a8', '#9b7ede'];
+
+/** A small button inside a text field's label that opens the emoji picker for that field. */
+function EmojiButton({ field }: { field: TextField }) {
+  return (
+    <button
+      type="button"
+      class={`emoji-btn${picker.value === field ? ' on' : ''}`}
+      title={t('emojiInsert')}
+      aria-label={t('emojiInsert')}
+      onClick={(e) => {
+        e.preventDefault();
+        picker.value = picker.value === field ? null : field;
+      }}
+    >
+      <Icon name="smile" size={16} />
+    </button>
+  );
+}
 
 const sizeLabel = (n: number) => (n === 0 ? t('noLimit') : n < 1024 * 1024 ? `${n / 1024} KB` : `${n / 1024 / 1024} MB`);
 
@@ -20,6 +63,10 @@ export function Inspector() {
   const [custom, setCustom] = useState(customWidth);
   const height = (s.band.bottom - s.band.top) * 100;
   const offset = (1 - s.band.bottom) * 100;
+  const stickerInput = useRef<HTMLInputElement>(null);
+  const first = frames.value[0];
+  // Colours taken from the first screenshot, so the text card can match the scene.
+  const fromFrames = useMemo(() => (first ? dominantColors(sampleFrame(first), 7) : []), [first?.id, first && cropKey(first.crop)]);
 
   return (
     <aside class="inspector">
@@ -116,17 +163,53 @@ export function Inspector() {
         }
       >
         <label class="field">
-          <span>{t('title')}</span>
-          <input type="text" value={s.title} placeholder={t('titlePh')} onInput={(e) => patchSettings({ title: (e.target as HTMLInputElement).value })} />
+          <span class="field-head">
+            {t('title')}
+            <EmojiButton field="title" />
+          </span>
+          <input
+            ref={(el) => {
+              fieldEls.title = el;
+            }}
+            type="text"
+            value={s.title}
+            placeholder={t('titlePh')}
+            onInput={(e) => patchSettings({ title: (e.target as HTMLInputElement).value })}
+          />
         </label>
+        {picker.value === 'title' && <EmojiPicker />}
         <label class="field">
-          <span>{t('note')}</span>
-          <textarea rows={4} value={s.note} placeholder={t('notePh')} onInput={(e) => patchSettings({ note: (e.target as HTMLTextAreaElement).value })} />
+          <span class="field-head">
+            {t('note')}
+            <EmojiButton field="note" />
+          </span>
+          <textarea
+            ref={(el) => {
+              fieldEls.note = el;
+            }}
+            rows={4}
+            value={s.note}
+            placeholder={t('notePh')}
+            onInput={(e) => patchSettings({ note: (e.target as HTMLTextAreaElement).value })}
+          />
         </label>
+        {picker.value === 'note' && <EmojiPicker />}
         <label class="field">
-          <span>{t('credit')}</span>
-          <input type="text" value={s.credit} placeholder={t('creditPh')} onInput={(e) => patchSettings({ credit: (e.target as HTMLInputElement).value })} />
+          <span class="field-head">
+            {t('credit')}
+            <EmojiButton field="credit" />
+          </span>
+          <input
+            ref={(el) => {
+              fieldEls.credit = el;
+            }}
+            type="text"
+            value={s.credit}
+            placeholder={t('creditPh')}
+            onInput={(e) => patchSettings({ credit: (e.target as HTMLInputElement).value })}
+          />
         </label>
+        {picker.value === 'credit' && <EmojiPicker />}
         <Segmented
           label={t('notePos')}
           value={s.notePos}
@@ -145,28 +228,78 @@ export function Inspector() {
           ]}
           onChange={(font) => patchSettings({ font })}
         />
+        <ColorField
+          label={t('textColor')}
+          value={s.textColor}
+          fallback={textColors(s.bg).fg}
+          presets={TEXT_COLORS}
+          allowAuto
+          onChange={(textColor) => patchSettings({ textColor })}
+        />
+      </Section>
+
+      <Section title={t('stickers')}>
+        <div class="row">
+          <button type="button" class={`btn${picker.value === 'sticker' ? ' active' : ''}`} disabled={!hasFrames} onClick={() => (picker.value = picker.value === 'sticker' ? null : 'sticker')}>
+            <Icon name="smile" size={16} />
+            {t('addEmoji')}
+          </button>
+          <button type="button" class="btn" disabled={!hasFrames} onClick={() => stickerInput.current?.click()}>
+            <Icon name="image" size={16} />
+            {t('addImage')}
+          </button>
+          <input
+            ref={stickerInput}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              const input = e.target as HTMLInputElement;
+              void addStickerFiles([...(input.files ?? [])], stickerSpot()).then(revealActiveSticker);
+              input.value = '';
+            }}
+          />
+        </div>
+        {picker.value === 'sticker' && <EmojiPicker />}
+        {assets.value.length > 0 && (
+          <div class="sticker-lib" aria-label={t('myStickers')}>
+            {assets.value.map((a) => (
+              <div class="sticker-item" key={a.id}>
+                <button
+                  type="button"
+                  class="sticker-add"
+                  title={a.name}
+                  disabled={!hasFrames}
+                  onClick={() => {
+                    addSticker({ kind: 'image', assetId: a.id, aspect: a.bitmap.width / a.bitmap.height }, stickerSpot());
+                    revealActiveSticker();
+                  }}
+                >
+                  <img src={a.thumb} alt={a.name} />
+                </button>
+                <button type="button" class="sticker-del" title={t('removeFromLib')} aria-label={t('removeFromLib')} onClick={() => removeAsset(a.id)}>
+                  <Icon name="close" size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p class="hint">{t('stickerTip')}</p>
       </Section>
 
       <Section title={t('style')}>
+        <ColorField
+          label={t('background')}
+          value={s.bg}
+          presets={BACKGROUNDS}
+          suggested={fromFrames}
+          defaultOpen
+          onChange={(bg) => patchSettings({ bg })}
+        />
         <Slider label={t('gap')} value={s.gap} min={0} max={40} onInput={(gap) => patchSettings({ gap })} />
         <Slider label={t('padding')} value={s.padding} min={0} max={80} onInput={(padding) => patchSettings({ padding })} />
         <Slider label={t('radius')} value={s.radius} min={0} max={48} onInput={(radius) => patchSettings({ radius })} />
-        <div class="seg-row">
-          <span class="seg-label">{t('background')}</span>
-          <div class="swatches">
-            {BACKGROUNDS.map((c) => (
-              <button
-                type="button"
-                class={`swatch${s.bg.toLowerCase() === c ? ' on' : ''}`}
-                style={{ background: c }}
-                aria-label={c}
-                title={c}
-                onClick={() => patchSettings({ bg: c })}
-              />
-            ))}
-            <input type="color" value={s.bg} aria-label={t('background')} onInput={(e) => patchSettings({ bg: (e.target as HTMLInputElement).value })} />
-          </div>
-        </div>
       </Section>
 
       <Section title={t('export')}>

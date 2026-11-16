@@ -1,6 +1,7 @@
-import type { Settings } from '../types';
+import type { Settings, Sticker, StickerAsset } from '../types';
 import { computeLayout, fitWidth, outputWidth, type Layout, type LayoutFrame, type Placed } from './layout';
-import { footerBlock, headerBlock, textColors, type Measure, type TextBlock } from './text';
+import { stickerBox } from './stickers';
+import { EMOJI_FONTS, footerBlock, headerBlock, textColors, type Measure, type TextBlock } from './text';
 
 export interface RenderPlan {
   layout: Layout;
@@ -53,8 +54,8 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath();
 }
 
-function paintText(ctx: CanvasRenderingContext2D, block: TextBlock, top: number, bg: string) {
-  const colors = textColors(bg);
+function paintText(ctx: CanvasRenderingContext2D, block: TextBlock, top: number, s: Settings) {
+  const colors = textColors(s.bg, s.textColor);
   ctx.textBaseline = 'middle';
   for (const line of block.lines) {
     ctx.font = line.font;
@@ -69,8 +70,8 @@ export function paintBase(ctx: CanvasRenderingContext2D, plan: RenderPlan) {
   const { layout, settings } = plan;
   ctx.fillStyle = settings.bg;
   ctx.fillRect(0, 0, layout.width, layout.height);
-  paintText(ctx, plan.header, layout.pad, settings.bg);
-  paintText(ctx, plan.footer, layout.body.y + layout.body.h, settings.bg);
+  paintText(ctx, plan.header, layout.pad, settings);
+  paintText(ctx, plan.footer, layout.body.y + layout.body.h, settings);
 }
 
 /**
@@ -110,4 +111,40 @@ export function paintItem(
     item.dh,
   );
   ctx.restore();
+}
+
+/** Stickers and where to find their pictures. */
+export interface Decor {
+  stickers: Sticker[];
+  assets: Map<string, StickerAsset>;
+}
+
+/** Emoji glyphs are a little wider than their font size; this keeps them inside the sticker box. */
+const EMOJI_FILL = 0.84;
+
+/** Paint the stickers on top of everything else, in the order they were added. */
+export function paintStickers(ctx: CanvasRenderingContext2D, plan: RenderPlan, decor: Decor) {
+  for (const s of decor.stickers) {
+    const box = stickerBox(s, plan.layout);
+    ctx.save();
+    ctx.translate(box.cx, box.cy);
+    ctx.rotate((s.rot * Math.PI) / 180);
+    if (s.kind === 'emoji' && s.emoji) {
+      ctx.font = `${Math.max(4, box.w * EMOJI_FILL)}px ${EMOJI_FONTS},sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = '#000';
+      // Centre on the glyph's real ink box; the nominal baseline differs between emoji fonts.
+      const m = ctx.measureText(s.emoji);
+      ctx.fillText(s.emoji, 0, (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2);
+    } else if (s.kind === 'image' && s.assetId) {
+      const asset = decor.assets.get(s.assetId);
+      if (asset) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(asset.bitmap, -box.w / 2, -box.h / 2, box.w, box.h);
+      }
+    }
+    ctx.restore();
+  }
 }

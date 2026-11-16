@@ -15,7 +15,7 @@ import {
 import { isImageFile, isVideoFile } from './core/image';
 import { planRender } from './core/render';
 import { lang, setLang, t } from './i18n';
-import { addBlobs, addFiles, busy, fail, frames, modal, say, settings } from './state';
+import { activeSticker, addBlobs, addFiles, busy, decor, fail, frames, modal, removeSticker, say, settings } from './state';
 import { CropModal } from './ui/CropModal';
 import { FrameRail } from './ui/FrameRail';
 import { Icon } from './ui/icons';
@@ -39,11 +39,11 @@ async function copyImage() {
     const plan = planRender(frames.value, settings.value);
     let canvas: HTMLCanvasElement;
     if (needsOriginals(plan, frames.value)) {
-      canvas = (await renderFinal(frames.value, settings.value)).canvas;
+      canvas = (await renderFinal(frames.value, settings.value, decor.value)).canvas;
     } else {
       // Stay synchronous up to the clipboard call so the user gesture is still valid.
       canvas = document.createElement('canvas');
-      renderTo(canvas, plan, frames.value);
+      renderTo(canvas, plan, frames.value, decor.value);
     }
     await copyCanvas(canvas);
     say('copied');
@@ -54,7 +54,7 @@ async function copyImage() {
 
 async function exportBlob() {
   const s = settings.value;
-  const { canvas } = await renderFinal(frames.value, s);
+  const { canvas } = await renderFinal(frames.value, s, decor.value);
   return encodeCanvas(canvas, s.format, s.quality, s.maxBytes);
 }
 
@@ -117,7 +117,13 @@ export function App() {
       else takeFiles(files);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (modal.value || !(e.metaKey || e.ctrlKey)) return;
+      if (modal.value) return;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && activeSticker.value && !typing(e.target)) {
+        e.preventDefault();
+        removeSticker(activeSticker.value);
+        return;
+      }
+      if (!(e.metaKey || e.ctrlKey)) return;
       const key = e.key.toLowerCase();
       if (key === 's') {
         e.preventDefault();
