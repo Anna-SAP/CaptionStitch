@@ -38,6 +38,8 @@ npm test
 
 需要 Node.js 20.19 或更高版本。
 
+**在线部署：** 推送到 `main` 后，`.github/workflows/pages.yml` 会自动测试、构建并发布到 GitHub Pages。
+
 ## 怎么用
 
 1. **放入截图**：拖入、点「添加截图」，或者截图后直接按 `Ctrl/⌘+V` 粘贴。一次放多张时按截图时间自动排序。
