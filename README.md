@@ -4,11 +4,15 @@
 
 所有处理都在浏览器本地完成：不上传图片，不依赖任何网站或 CDN，断网也能用。
 
+**在线使用：<https://anna-sap.github.io/CaptionStitch/>**（打开后点「用示例试试」即可体验）
+
 ![CaptionStitch 界面](docs/screenshot.png)
 
 ## 怎么运行
 
-**最省事：直接打开单文件版。** 用浏览器打开 [`release/CaptionStitch.html`](release/CaptionStitch.html) 即可。它是一个约 100 KB 的自包含文件，可以拷到任何地方、离线使用，也可以丢到任意静态托管上。
+**在线版：** 直接访问 <https://anna-sap.github.io/CaptionStitch/>，无需安装。图片同样只在你的浏览器里处理，不会上传。
+
+**离线版：直接打开单文件版。** 用浏览器打开 [`release/CaptionStitch.html`](release/CaptionStitch.html) 即可。它是一个约 100 KB 的自包含文件，可以拷到任何地方、离线使用，也可以丢到任意静态托管上。
 
 **本地开发：**
 
@@ -38,7 +42,7 @@ npm test
 
 需要 Node.js 20.19 或更高版本。
 
-**在线部署：** 推送到 `main` 后，`.github/workflows/pages.yml` 会自动测试、构建并发布到 GitHub Pages。
+**在线部署：** 推送到 `main` 后，`.github/workflows/pages.yml` 会自动测试、构建并发布到 GitHub Pages，在线版随之更新。
 
 ## 怎么用
 
