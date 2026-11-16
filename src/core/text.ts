@@ -21,13 +21,25 @@ export interface TextBlock {
 
 export const EMPTY_BLOCK: TextBlock = { height: 0, lines: [] };
 
+/** Colour emoji fonts, tried after the text fonts so emoji in the text are drawn in colour. */
+export const EMOJI_FONTS = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","Twemoji Mozilla"';
+
 const FONTS = {
-  sans: '"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC","WenQuanYi Zen Hei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
-  serif:
-    '"Songti SC","Noto Serif CJK SC","Source Han Serif SC",SimSun,"Iowan Old Style","Palatino Linotype",Georgia,serif',
+  sans: `"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC","WenQuanYi Zen Hei",system-ui,-apple-system,"Segoe UI",Roboto,${EMOJI_FONTS},sans-serif`,
+  serif: `"Songti SC","Noto Serif CJK SC","Source Han Serif SC",SimSun,"Iowan Old Style","Palatino Linotype",Georgia,${EMOJI_FONTS},serif`,
 };
 
-const isCjk = (ch: string) => /[⺀-鿿豈-﫿＀-￯　-〿]/.test(ch);
+/** Characters a line may break around on their own: CJK text and emoji. */
+const isCjk = (ch: string) => /[⺀-鿿豈-﫿＀-￯　-〿]/.test(ch) || /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(ch);
+
+const segmenter =
+  typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+
+/** Split into user-perceived characters, so multi-part emoji are never cut in half. */
+export function graphemes(text: string): string[] {
+  return segmenter ? [...segmenter.segment(text)].map((s) => s.segment) : [...text];
+}
+
 /** Punctuation that must not start a line. */
 const NO_LINE_START = /^[，。！？、；：）》」』”’…—,.!?;:)\]}%]/;
 
@@ -39,7 +51,7 @@ export function tokenize(text: string): string[] {
     if (word) out.push(word);
     word = '';
   };
-  for (const ch of text) {
+  for (const ch of graphemes(text)) {
     if (isCjk(ch)) {
       flush();
       out.push(ch);
@@ -68,8 +80,8 @@ export function wrapText(text: string, maxWidth: number, font: string, measure: 
       if (line === '' || measure(next.trimEnd(), font) <= maxWidth || NO_LINE_START.test(tok)) {
         line = next;
         // A single token wider than the line is split by character.
-        while (measure(line.trimEnd(), font) > maxWidth && [...line].length > 1 && !NO_LINE_START.test(tok)) {
-          const chars = [...line];
+        while (measure(line.trimEnd(), font) > maxWidth && graphemes(line).length > 1 && !NO_LINE_START.test(tok)) {
+          const chars = graphemes(line);
           let cut = chars.length - 1;
           while (cut > 1 && measure(chars.slice(0, cut).join(''), font) > maxWidth) cut--;
           lines.push(chars.slice(0, cut).join(''));
@@ -149,8 +161,13 @@ export function footerBlock(s: Settings, width: number, unit: number, pad: numbe
   return buildBlock(parts, width, unit, sidePad, s, measure);
 }
 
-/** Readable text colour for a given background. */
-export function textColors(bg: string): { fg: string; muted: string } {
+/** Text colours: the chosen one if any, otherwise black or white to suit the background. */
+export function textColors(bg: string, chosen = ''): { fg: string; muted: string } {
+  const own = /^#([0-9a-f]{6})$/i.exec(chosen.trim());
+  if (own) {
+    const n = parseInt(own[1], 16);
+    return { fg: chosen.trim(), muted: `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},0.62)` };
+  }
   const m = /^#?([0-9a-f]{6})$/i.exec(bg.trim());
   let lum = 0;
   if (m) {

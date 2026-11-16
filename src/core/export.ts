@@ -1,5 +1,5 @@
 import type { Frame, OutFormat, Settings } from '../types';
-import { paintBase, paintItem, planRender, type RenderPlan } from './render';
+import { paintBase, paintItem, paintStickers, planRender, type Decor, type RenderPlan } from './render';
 
 export function toBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
@@ -8,7 +8,7 @@ export function toBlob(canvas: HTMLCanvasElement, type: string, quality?: number
 }
 
 /** Paint a plan with the in-memory working copies. Synchronous, used for the live preview. */
-export function renderTo(canvas: HTMLCanvasElement, plan: RenderPlan, frames: Frame[]) {
+export function renderTo(canvas: HTMLCanvasElement, plan: RenderPlan, frames: Frame[], decor?: Decor) {
   const { layout } = plan;
   if (canvas.width !== layout.width) canvas.width = layout.width;
   if (canvas.height !== layout.height) canvas.height = layout.height;
@@ -20,6 +20,7 @@ export function renderTo(canvas: HTMLCanvasElement, plan: RenderPlan, frames: Fr
     if (!f) continue;
     paintItem(ctx, plan, item, f.work, f.work.width / f.w, f.work.height / f.h);
   }
+  if (decor) paintStickers(ctx, plan, decor);
 }
 
 /** True when the output is larger than what the working copies can supply sharply. */
@@ -33,11 +34,15 @@ export function needsOriginals(plan: RenderPlan, frames: Frame[]): boolean {
 }
 
 /** Render the final image, decoding original files one at a time when extra resolution is needed. */
-export async function renderFinal(frames: Frame[], settings: Settings): Promise<{ canvas: HTMLCanvasElement; plan: RenderPlan }> {
+export async function renderFinal(
+  frames: Frame[],
+  settings: Settings,
+  decor?: Decor,
+): Promise<{ canvas: HTMLCanvasElement; plan: RenderPlan }> {
   const plan = planRender(frames, settings);
   const canvas = document.createElement('canvas');
   if (!needsOriginals(plan, frames)) {
-    renderTo(canvas, plan, frames);
+    renderTo(canvas, plan, frames, decor);
     return { canvas, plan };
   }
   canvas.width = plan.layout.width;
@@ -56,6 +61,7 @@ export async function renderFinal(frames: Frame[], settings: Settings): Promise<
     paintItem(ctx, plan, item, original, 1, 1);
     original.close();
   }
+  if (decor) paintStickers(ctx, plan, decor);
   return { canvas, plan };
 }
 

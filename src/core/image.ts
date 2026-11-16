@@ -1,4 +1,4 @@
-import type { Frame, FrameStats, Rect } from '../types';
+import type { Frame, FrameStats, Rect, StickerAsset } from '../types';
 import { FULL_RECT } from '../types';
 import { darkCols, darkRows, detectBandInFrame, type BandHit } from './detect';
 
@@ -106,3 +106,38 @@ export function cropKey(r: Rect): string {
 export const IMAGE_TYPES = /^image\/(png|jpe?g|webp|avif|gif|bmp)$/i;
 export const isImageFile = (f: File | Blob) => IMAGE_TYPES.test(f.type);
 export const isVideoFile = (f: File | Blob) => /^video\//i.test(f.type);
+
+/** Sticker pictures are kept at most this large on their longer side. */
+const STICKER_MAX = 1024;
+
+/** Decode a picture for use as a sticker. Transparency is kept. */
+export async function importStickerBlob(blob: Blob, name: string, id = newId()): Promise<StickerAsset> {
+  let bitmap = await createImageBitmap(blob);
+  const longer = Math.max(bitmap.width, bitmap.height);
+  if (longer > STICKER_MAX) {
+    const c = document.createElement('canvas');
+    c.width = Math.round((bitmap.width / longer) * STICKER_MAX);
+    c.height = Math.round((bitmap.height / longer) * STICKER_MAX);
+    const ctx = c.getContext('2d')!;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, 0, 0, c.width, c.height);
+    bitmap.close();
+    bitmap = await createImageBitmap(c);
+  }
+  const scale = 96 / Math.max(bitmap.width, bitmap.height);
+  const t = document.createElement('canvas');
+  t.width = Math.max(1, Math.round(bitmap.width * Math.min(1, scale)));
+  t.height = Math.max(1, Math.round(bitmap.height * Math.min(1, scale)));
+  const tctx = t.getContext('2d')!;
+  tctx.imageSmoothingQuality = 'high';
+  tctx.drawImage(bitmap, 0, 0, t.width, t.height);
+  return { id, name, blob, bitmap, thumb: t.toDataURL('image/png') };
+}
+
+/** A small RGBA sample of a frame's content area, for picking colours from it. */
+export function sampleFrame(frame: Frame, size = 40): Uint8ClampedArray {
+  const ctx = scratchCtx(size, size);
+  const { work, crop } = frame;
+  ctx.drawImage(work, crop.x * work.width, crop.y * work.height, crop.w * work.width, crop.h * work.height, 0, 0, size, size);
+  return ctx.getImageData(0, 0, size, size).data;
+}
